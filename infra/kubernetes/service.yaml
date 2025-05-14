@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: peerai-agentic-workbench
+  labels:
+    app: peerai-agentic-workbench
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 3000
+    name: next
+  - port: 8000
+    targetPort: 8000
+    name: fastapi
+  selector:
+    app: peerai-agentic-workbench 
