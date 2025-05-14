@@ -1,0 +1,92 @@
+name: Build and Deploy to GKE
+
+on:
+  push:
+    branches: [ main ]
+  # Allow manual triggers
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
+  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  IMAGE: peerai-agentic-workbench
+  
+jobs:
+  setup-build-publish-deploy:
+    name: Setup, Build, Publish, and Deploy
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      
+    # Setup gcloud CLI
+    # Authenticate to Google Cloud
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+    # Set up gcloud CLI
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        install_components: 'gke-gcloud-auth-plugin'
+        
+    # Configure Docker to use gcloud as a credential helper
+    - name: Configure Docker
+      run: |
+        gcloud --quiet auth configure-docker
+        
+    # Get the GKE credentials
+    - name: Get GKE Credentials
+      run: |
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --zone ${{ env.GKE_ZONE }} --project ${{ env.PROJECT_ID }}
+        
+    # Build the Docker image
+    - name: Build
+      run: |
+        docker build \
+          --tag "gcr.io/$PROJECT_ID/$IMAGE:$GITHUB_SHA" \
+          --tag "gcr.io/$PROJECT_ID/$IMAGE:latest" \
+          --build-arg GITHUB_SHA="$GITHUB_SHA" \
+          --build-arg GITHUB_REF="$GITHUB_REF" \
+          .
+        
+    # Push the Docker image to Google Container Registry
+    - name: Publish
+      run: |
+        docker push "gcr.io/$PROJECT_ID/$IMAGE:$GITHUB_SHA"
+        docker push "gcr.io/$PROJECT_ID/$IMAGE:latest"
+        
+    # Set up Kustomize
+    - name: Set up Kustomize
+      run: |
+        curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+        chmod u+x ./kustomize
+        
+    # Create kustomization file
+    - name: Create Kustomization File
+      run: |
+        mkdir -p kustomize
+        cd kustomize
+        
+        cat <<EOF > kustomization.yaml
+        resources:
+        - ../kubernetes/deployment.yaml
+        - ../kubernetes/service.yaml
+        - ../kubernetes/ingress.yaml
+        
+        images:
+        - name: gcr.io/PROJECT_ID/peerai-agentic-workbench:VERSION
+          newName: gcr.io/$PROJECT_ID/$IMAGE
+          newTag: $GITHUB_SHA
+        EOF
+        
+    # Deploy the Docker image to the GKE cluster
+    - name: Deploy
+      run: |
+        ./kustomize build kustomize | kubectl apply -f -
+        kubectl rollout status deployment/peerai-agentic-workbench 
